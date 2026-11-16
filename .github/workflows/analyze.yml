@@ -1,1 +1,95 @@
 
+name: APK Analyzer
+
+'on':
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Install tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y apktool unzip zip jq file
+          python3 -m pip install --user gdown
+
+      - name: Download JADX
+        run: |
+          mkdir -p tools input output
+          JADX_URL=$(curl -s https://api.github.com/repos/skylot/jadx/releases/latest | jq -r '.assets[] | select(.name | endswith(".zip")) | .browser_download_url' | head -n 1)
+          if [ -z "$JADX_URL" ]; then
+            echo "Gagal mendapatkan link JADX"
+            exit 1
+          fi
+          curl -L "$JADX_URL" -o tools/jadx.zip
+          unzip -q tools/jadx.zip -d tools/jadx
+
+      - name: Download APK from Google Drive
+        run: |
+          DRIVE_URL="https://drive.google.com/uc?id=1C-NwLMSWaEOZaHzaxdmonRzFnBs2wBxU"
+          python3 -m gdown --fuzzy "$DRIVE_URL" -O input/app.apk
+          if [ ! -s input/app.apk ]; then
+            echo "APK gagal diunduh. Periksa akses Google Drive."
+            exit 1
+          fi
+          file input/app.apk
+
+      - name: Decompile with Apktool
+        run: |
+          apktool d -f input/app.apk -o output/APKTOOL
+
+      - name: Decompile with JADX
+        run: |
+          JADX=$(find tools/jadx -type f -name 'jadx' | head -n 1)
+          chmod +x "$JADX"
+          "$JADX" -d output/JADX input/app.apk
+
+      - name: Create analysis report
+        if: always()
+        run: |
+          {
+            echo "APK ANALYSIS REPORT"
+            echo "=================="
+            echo "Date: $(date -u)"
+            echo ""
+            echo "APK information:"
+            if [ -f input/app.apk ]; then
+              file input/app.apk
+              ls -lh input/app.apk
+            else
+              echo "APK not downloaded"
+            fi
+            echo ""
+            echo "Output folders:"
+            ls -lah output/ 2>/dev/null || true
+          } > output/analysis-report.txt
+
+      - name: Create ZIP
+        if: always()
+        run: |
+          cd output
+          zip -qr ../APK-Analysis-Results.zip . || true
+
+      - name: Upload analysis ZIP
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: APK-Analysis-Results
+          path: APK-Analysis-Results.zip
+          if-no-files-found: warn
+          retention-days: 7
