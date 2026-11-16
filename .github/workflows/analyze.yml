@@ -1,6 +1,9 @@
 name: Android APK Reverse Engineering & Analysis
 
 on:
+  push:
+    branches:
+      - main
   workflow_dispatch:
     inputs:
       gdrive_file_id:
