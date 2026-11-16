@@ -6,10 +6,10 @@ on:
       - main
   workflow_dispatch:
     inputs:
-      gdrive_file_id:
-        description: 'Google Drive File ID APK'
+      gdrive_url:
+        description: 'Google Drive URL atau File ID APK'
         required: true
-        default: '1C-NwLMSWaEOZaHzaxdmonRzFnBs2wBxU'
+        default: 'https://drive.google.com/file/d/1C-NwLMSWaEOZaHzaxdmonRzFnBs2wBxU/view?usp=drivesdk'
         type: string
 
 jobs:
@@ -41,10 +41,8 @@ jobs:
             jq \
             python3-pip
 
-          # Install gdown untuk menangani unduhan file besar Google Drive (bypass virus scan warning)
-          pip3 install --no-cache-dir --break-system-packages gdown
+          pip3 install --no-cache-dir --break-system-packages --upgrade gdown
 
-          # Install Apktool versi terbaru dari GitHub Releases resmi
           APKTOOL_TAG=$(curl -fsSL https://api.github.com/repos/iBotPeaches/Apktool/releases/latest | jq -r '.tag_name')
           if [ -z "$APKTOOL_TAG" ] || [ "$APKTOOL_TAG" = "null" ]; then
             echo "::error::Gagal mengambil versi terbaru Apktool dari GitHub API."
@@ -89,18 +87,35 @@ jobs:
 
       - name: Download APK from Google Drive
         env:
-          FILE_ID: ${{ github.event.inputs.gdrive_file_id || '1C-NwLMSWaEOZaHzaxdmonRzFnBs2wBxU' }}
+          RAW_INPUT: ${{ github.event.inputs.gdrive_url || 'https://drive.google.com/file/d/1C-NwLMSWaEOZaHzaxdmonRzFnBs2wBxU/view?usp=drivesdk' }}
         run: |
           set -euo pipefail
-          echo "Mengunduh APK dengan File ID: ${FILE_ID}..."
+          # Ekstrak File ID baik dari URL lengkap maupun input ID langsung
+          if [[ "$RAW_INPUT" =~ /d/([a-zA-Z0-9_-]+) ]]; then
+            FILE_ID="${BASH_REMATCH[1]}"
+          elif [[ "$RAW_INPUT" =~ id=([a-zA-Z0-9_-]+) ]]; then
+            FILE_ID="${BASH_REMATCH[1]}"
+          else
+            FILE_ID="$RAW_INPUT"
+          fi
 
-          if ! gdown --id "${FILE_ID}" -O target.apk; then
-            echo "::error::Gagal mengunduh file dari Google Drive. Pastikan izin akses diatur ke 'Anyone with the link - Viewer'."
-            exit 1
+          echo "Mengunduh APK (File ID: ${FILE_ID})..."
+
+          # Metode 1: Endpoint langsung drive.usercontent.google.com dengan confirm=t
+          curl -fL \
+            -A "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36" \
+            "https://drive.usercontent.google.com/download?id=${FILE_ID}&export=download&confirm=t" \
+            -o target.apk || true
+
+          # Metode 2: Fallback ke gdown --fuzzy jika Metode 1 gagal atau terlalu kecil (< 1 MB)
+          if [ ! -f target.apk ] || [ "$(stat -c%s target.apk)" -lt 1048576 ]; then
+            echo "Mencoba ulang dengan gdown --fuzzy..."
+            rm -f target.apk
+            gdown --fuzzy "https://drive.google.com/file/d/${FILE_ID}/view?usp=drivesdk" -O target.apk
           fi
 
           if [ ! -f target.apk ]; then
-            echo "::error::File target.apk tidak ditemukan setelah proses unduhan."
+            echo "::error::Gagal mengunduh file dari Google Drive."
             exit 1
           fi
 
@@ -113,20 +128,17 @@ jobs:
           echo "Ukuran file: ${FILE_SIZE} bytes"
           echo "Tipe MIME terdeteksi: ${FILE_MIME}"
 
-          # Tolak jika ukuran file terlalu kecil (< 100 KB, indikasi halaman error HTML)
           if [ "$FILE_SIZE" -lt 102400 ]; then
             echo "::error::Ukuran file terlalu kecil (${FILE_SIZE} bytes). Kemungkinan gagal mengunduh APK."
             head -n 20 target.apk || true
             exit 1
           fi
 
-          # Tolak jika file adalah HTML atau teks
           if [[ "$FILE_MIME" == text/* ]] || grep -qi "<html" <(head -c 512 target.apk | tr -d '\0'); then
             echo "::error::File yang diunduh adalah halaman HTML, bukan binary APK."
             exit 1
           fi
 
-          # APK harus berupa arsip ZIP valid dan memuat AndroidManifest.xml
           if ! unzip -tq target.apk >/dev/null 2>&1; then
             echo "::error::File target.apk rusak atau bukan arsip ZIP/APK yang valid."
             exit 1
@@ -163,8 +175,6 @@ jobs:
         run: |
           set -euo pipefail
           echo "Menjalankan JADX..."
-          # JADX bisa mengembalikan exit code 1 jika ada sebagian kecil kelas gagal didekompilasi,
-          # sehingga kita verifikasi direktori output sources/resources setelah eksekusi.
           set +e
           jadx \
             --deobf \
@@ -197,7 +207,7 @@ jobs:
             echo "Branch         : ${{ github.ref_name }}"
             echo "Run ID         : ${{ github.run_id }}"
             echo "Timestamp (UTC): $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
-            echo "GDrive File ID : ${{ github.event.inputs.gdrive_file_id || '1C-NwLMSWaEOZaHzaxdmonRzFnBs2wBxU' }}"
+            echo "Source Input   : ${{ github.event.inputs.gdrive_url || 'https://drive.google.com/file/d/1C-NwLMSWaEOZaHzaxdmonRzFnBs2wBxU/view?usp=drivesdk' }}"
             echo ""
             echo "--- TOOL VERSIONS ---"
             echo "Java           : $(java -version 2>&1 | head -n 1)"
